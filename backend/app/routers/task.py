@@ -1,4 +1,4 @@
-"""检测任务接口：维护检测任务，覆盖派发任务、提交复核、确认完成等动作。"""
+"""检测任务接口：维护检测任务，覆盖派发任务、提交复核、确认完成、驳回任务等动作。"""
 from __future__ import annotations
 
 from typing import Any
@@ -14,6 +14,25 @@ service = TaskService()
 
 LIST_FIELDS = ["任务编号", "关联样品", "检测项目", "承检人员", "计划完成日", "实际完成日", "任务优先级", "任务状态"]
 STATUSES = ["待派发", "检测中", "待复核", "已完成"]
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出检测任务清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "task", "total": total, "items": items}
+
+
+@router.get("/stats")
+def task_stats() -> dict[str, int]:
+    """列表页统计卡：待派发、检测中、超期任务数。"""
+    return service.stats()
+
+
+@router.get("/workload")
+def task_workload() -> dict[str, Any]:
+    """按承检人员汇总在手任务（待派发、检测中），改派后新旧双方数量同时刷新。"""
+    return {"items": service.workload()}
 
 
 @router.get("", response_model=PageResult[dict])
@@ -41,25 +60,27 @@ def get_entry(entry_id: int) -> dict:
 
 @router.post("", response_model=ActionResult)
 def create_entry(payload: EntryPayload) -> ActionResult:
-    """登记一条检测任务，缺字段时说明原因而不是静默丢弃。"""
-    entry, missing = service.create_entry(payload.values)
-    if missing:
-        return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
+    """登记一条检测任务，缺字段或任务编号重复时说明原因而不是静默丢弃。"""
+    entry, error = service.create_entry(payload.values)
+    if error:
+        return ActionResult(ok=False, message=error)
     return ActionResult(ok=True, message="检测任务已登记", entry=entry)
+
+
+@router.put("/{entry_id}", response_model=ActionResult)
+def update_entry(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """改派承检人员、调整任务优先级等；状态不在这里改，仍走动作流转。"""
+    entry, error = service.update_entry(entry_id, payload.values)
+    if error:
+        return ActionResult(ok=False, message=error)
+    return ActionResult(ok=True, message="检测任务已更新", entry=entry)
 
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条检测任务执行派发任务、提交复核、确认完成；不允许的动作会被拦下并说明原因。"""
+    """对单条检测任务执行派发任务、提交复核、确认完成、驳回任务；不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
     entry, message = service.run_action(entry_id, action)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出检测任务清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "task", "total": total, "items": items}
